@@ -112,20 +112,7 @@ class DeepSeekV32Detector(BaseFormatDetector):
                     if isinstance(parameters, dict):
                         return parameters
                 except (json.JSONDecodeError, ValueError):
-                    # If JSON parsing fails, but partial parsing is allowed,
-                    # attempt a partial JSON parse before falling back to XML.
-                    if allow_partial:
-                        try:
-                            result, _ = _partial_json_loads(
-                                invoke_content_stripped, Allow.ALL
-                            )
-                            if isinstance(result, dict) and result:
-                                return result
-                        except Exception:
-                            # Ignore partial parsing errors and fall through
-                            pass
-                    # If partial parsing is not allowed or yielded nothing
-                    # useful, fall through to XML parsing.
+                    # If JSON parsing fails, fall through to XML parsing,
                     pass
             # Partial JSON during streaming: use partial_json_loads instead of
             # requiring a closing '}'.  Without this branch every incomplete
