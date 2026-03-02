@@ -118,7 +118,9 @@ class DeepSeekV32Detector(BaseFormatDetector):
                     # incremental diffs for this chunk.
                     if allow_partial:
                         try:
-                            result, _ = _partial_json_loads(invoke_content_stripped, Allow.ALL)
+                            result, _ = _partial_json_loads(
+                                invoke_content_stripped, Allow.ALL
+                            )
                             if isinstance(result, dict) and result:
                                 return result
                         except Exception:
