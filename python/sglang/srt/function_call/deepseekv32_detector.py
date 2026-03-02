@@ -104,16 +104,28 @@ class DeepSeekV32Detector(BaseFormatDetector):
         # First, try to parse as direct JSON (new format)
         invoke_content_stripped = invoke_content.strip()
 
-        if invoke_content_stripped.startswith("{") and invoke_content_stripped.endswith(
-            "}"
-        ):
-            try:
-                parameters = json.loads(invoke_content_stripped)
-                if isinstance(parameters, dict):
-                    return parameters
-            except (json.JSONDecodeError, ValueError):
-                # If JSON parsing fails, fall through to XML parsing
-                pass
+	if invoke_content_stripped.startswith("{"):
+            # Complete JSON: starts AND ends with braces
+            if invoke_content_stripped.endswith("}"):
+                try:
+                    parameters = json.loads(invoke_content_stripped)
+                    if isinstance(parameters, dict):
+                        return parameters
+                except (json.JSONDecodeError, ValueError):
+                    # If JSON parsing fails, fall through to XML parsing
+                    pass
+            # Partial JSON during streaming: use partial_json_loads instead of
+            # requiring a closing '}'.  Without this branch every incomplete
+            # JSON chunk is parsed as {} (empty), making argument_diff always
+            # None until the invoke block is fully closed, so all arguments are
+            # sent in a single burst rather than incrementally.
+            elif allow_partial:
+                try:
+                    result, _ = _partial_json_loads(invoke_content_stripped, Allow.ALL)
+                    if isinstance(result, dict) and result:
+                        return result
+                except Exception:
+                    pass
 
         # Fall back to XML parameter tag parsing (original format)
         parameters = {}
