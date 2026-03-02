@@ -104,7 +104,7 @@ class DeepSeekV32Detector(BaseFormatDetector):
         # First, try to parse as direct JSON (new format)
         invoke_content_stripped = invoke_content.strip()
 
-	if invoke_content_stripped.startswith("{"):
+        if invoke_content_stripped.startswith("{"):
             # Complete JSON: starts AND ends with braces
             if invoke_content_stripped.endswith("}"):
                 try:
