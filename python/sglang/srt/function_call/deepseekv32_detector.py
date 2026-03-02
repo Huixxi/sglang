@@ -112,13 +112,23 @@ class DeepSeekV32Detector(BaseFormatDetector):
                     if isinstance(parameters, dict):
                         return parameters
                 except (json.JSONDecodeError, ValueError):
-                    # If JSON parsing fails, fall through to XML parsing,
-                    pass
-            # Partial JSON during streaming: use partial_json_loads instead of
-            # requiring a closing '}'.  Without this branch every incomplete
-            # JSON chunk is parsed as {} (empty), making argument_diff always
-            # None until the invoke block is fully closed, so all arguments are
-            # sent in a single burst rather than incrementally.
+                    # json.loads failed (e.g. inner "}" closed a nested object but
+                    # outer array/object is still open).  Fall through to
+                    # partial_json_loads when streaming so we can still produce
+                    # incremental diffs for this chunk.
+                    if allow_partial:
+                        try:
+                            result, _ = _partial_json_loads(invoke_content_stripped, Allow.ALL)
+                            if isinstance(result, dict) and result:
+                                return result
+                        except Exception:
+                            pass
+            # Partial JSON during streaming: content doesn't end with "}" yet.
+            # Use partial_json_loads instead of requiring a closing "}".
+            # Without this branch every incomplete JSON chunk is parsed as {}
+            # (empty), making argument_diff always None until the invoke block
+            # is fully closed, so all arguments are sent in a single burst
+            # rather than incrementally.
             elif allow_partial:
                 try:
                     result, _ = _partial_json_loads(invoke_content_stripped, Allow.ALL)
