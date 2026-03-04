@@ -224,7 +224,7 @@ class DeepSeekV32Detector(BaseFormatDetector):
         ends_with_prefix = any(
             current_text.rstrip().endswith(prefix) for prefix in dsml_prefixes
         )
-        print(f"-----------Current buffer-----------: {current_text}")
+
         if (
             not self.has_tool_call(current_text)
             and not potentially_dsml
@@ -254,8 +254,6 @@ class DeepSeekV32Detector(BaseFormatDetector):
                 # Initialize state if this is the first tool call
                 if self.current_tool_id == -1:
                     self.current_tool_id = 0
-                    self.prev_tool_call_arr = []
-                    self.streamed_args_for_tool = [""]
 
                 # Ensure arrays are large enough for current tool
                 while len(self.prev_tool_call_arr) <= self.current_tool_id:
