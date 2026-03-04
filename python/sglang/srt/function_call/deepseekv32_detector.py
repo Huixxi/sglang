@@ -85,7 +85,7 @@ class DeepSeekV32Detector(BaseFormatDetector):
             r'<｜DSML｜invoke\s+name="([^"]+)"\s*>(.*?)(</｜DSML｜invoke>|$)'
         )
         self.prefix_parameter_end_call = ["</", "｜DSML｜", "parameter"]
-        self.current_tool_id = -1
+        self.prefix_invoke_end_call = ["</", "｜DSML｜", "inv", "oke"]
 
     def has_tool_call(self, text: str) -> bool:
         """Check if the text contains a deepseek v32 format tool call."""
@@ -93,55 +93,28 @@ class DeepSeekV32Detector(BaseFormatDetector):
 
     def _parse_parameters_from_xml(
         self, invoke_content: str, allow_partial: bool = False
-    ) -> dict:
+    ) -> str:
         """
-        Parse parameters from either XML-like format or JSON format to dict.
+        Parse parameters from either XML-like format or JSON format.
+        Returns a JSON string in all cases.
 
         Supports two formats:
         1. XML parameter tags: <｜DSML｜parameter name="..." string="...">value</｜DSML｜parameter>
         2. Direct JSON: { "key": "value" }
         """
-        # First, try to parse as direct JSON (new format)
         invoke_content_stripped = invoke_content.strip()
 
         if invoke_content_stripped.startswith("{"):
-            # Complete JSON: starts AND ends with braces
-            if invoke_content_stripped.endswith("}"):
-                try:
-                    parameters = json.loads(invoke_content_stripped)
-                    if isinstance(parameters, dict):
-                        return parameters
-                except (json.JSONDecodeError, ValueError):
-                    # json.loads failed (e.g. inner "}" closed a nested object but
-                    # outer array/object is still open).  Fall through to
-                    # partial_json_loads when streaming so we can still produce
-                    # incremental diffs for this chunk.
-                    if allow_partial:
-                        try:
-                            result, _ = _partial_json_loads(
-                                invoke_content_stripped, Allow.ALL
-                            )
-                            if isinstance(result, dict) and result:
-                                return result
-                        except Exception:
-                            pass
-            # Partial JSON during streaming: content doesn't end with "}" yet.
-            # Use partial_json_loads instead of requiring a closing "}".
-            # Without this branch every incomplete JSON chunk is parsed as {}
-            # (empty), making argument_diff always None until the invoke block
-            # is fully closed, so all arguments are sent in a single burst
-            # rather than incrementally.
-            elif allow_partial:
-                try:
-                    result, _ = _partial_json_loads(invoke_content_stripped, Allow.ALL)
-                    if isinstance(result, dict) and result:
-                        return result
-                except Exception:
-                    pass
+            if allow_partial:
+                # Remove incomplete invoke end call prefix in case they are captured by param
+                for token in reversed(self.prefix_invoke_end_call):
+                    invoke_content_stripped = invoke_content_stripped.rstrip(token)
+                return invoke_content_stripped
+            elif invoke_content_stripped.endswith("}"):
+                return invoke_content_stripped
 
         # Fall back to XML parameter tag parsing (original format)
         parameters = {}
-        # Find all complete parameter matches
         param_matches = list(
             re.finditer(self.parameter_regex, invoke_content, re.DOTALL)
         )
@@ -186,7 +159,7 @@ class DeepSeekV32Detector(BaseFormatDetector):
                         param_value, Allow.ALL
                     )[0]
 
-        return parameters
+        return json.dumps(parameters, ensure_ascii=False)
 
     def detect_and_parse(self, text: str, tools: list[Tool]) -> StreamingParseResult:
         """
@@ -220,10 +193,9 @@ class DeepSeekV32Detector(BaseFormatDetector):
             )
 
             for func_name, invoke_content, _ in invoke_matches:
-                # Parse parameters from XML format
+                # Parse parameters — returns a JSON string; convert to dict for parse_base_json
                 func_args = self._parse_parameters_from_xml(invoke_content)
-                # construct match_result for parse_base_json
-                match_result = {"name": func_name, "parameters": func_args}
+                match_result = {"name": func_name, "parameters": json.loads(func_args)}
                 calls.extend(self.parse_base_json(match_result, tools))
 
             return StreamingParseResult(normal_text=normal_text, calls=calls)
@@ -252,16 +224,13 @@ class DeepSeekV32Detector(BaseFormatDetector):
         ends_with_prefix = any(
             current_text.rstrip().endswith(prefix) for prefix in dsml_prefixes
         )
-
+        print(f"-----------Current buffer-----------: {current_text}")
         if (
             not self.has_tool_call(current_text)
             and not potentially_dsml
             and not ends_with_prefix
         ):
             self._buffer = ""
-            for e_token in [self.eot_token, self.invoke_end_token]:
-                if e_token in current_text:
-                    current_text = current_text.replace(e_token, "")
             return StreamingParseResult(normal_text=current_text)
 
         all_calls: list[ToolCallItem] = []
@@ -305,11 +274,10 @@ class DeepSeekV32Detector(BaseFormatDetector):
                     )
                     self.current_tool_name_sent = True
 
-                # 2. Parse current parameters (partial or complete)
+                # 2. Parse current parameters (partial or complete) as a JSON string
                 current_params = self._parse_parameters_from_xml(
                     invoke_content, allow_partial=not is_tool_end
                 )
-                current_args_json = json.dumps(current_params, ensure_ascii=False)
 
                 # 3. Calculate and send incremental arguments
                 sent_len = len(self.streamed_args_for_tool[self.current_tool_id])
@@ -320,13 +288,12 @@ class DeepSeekV32Detector(BaseFormatDetector):
                 argument_diff = None
 
                 if is_tool_end:
-                    # If complete, send everything remaining
-                    argument_diff = current_args_json[sent_len:]
+                    # Tool complete: flush everything not yet sent
+                    argument_diff = current_params[sent_len:]
                 elif prev_params is not None:
-                    # If partial, send stable prefix diff
-                    prev_args_json = json.dumps(prev_params, ensure_ascii=False)
-                    if current_args_json != prev_args_json:
-                        prefix = _find_common_prefix(prev_args_json, current_args_json)
+                    # Partial: send only the stable common-prefix growth
+                    if current_params != prev_params:
+                        prefix = _find_common_prefix(current_params, prev_params)
                         if len(prefix) > sent_len:
                             argument_diff = prefix[sent_len:]
 
@@ -374,5 +341,5 @@ class DeepSeekV32Detector(BaseFormatDetector):
         return lambda name: StructureInfo(
             begin=f'<｜DSML｜invoke name="{name}">',
             end="</｜DSML｜invoke>",
-            trigger=f"<｜DSML｜invoke",
+            trigger="<｜DSML｜invoke",
         )
